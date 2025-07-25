@@ -1,6 +1,7 @@
 venv/
 .vscode/
 pyvista_tutorial/
+notebooks/
 
 # macOS
 .DS_Store
