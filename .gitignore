@@ -1,7 +1,4 @@
 .vscode/
-pyvista_tutorial/
-pytorch_tutorial/
-archive/
 
 # macOS
 .DS_Store
