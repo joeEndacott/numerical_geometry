@@ -1,7 +1,7 @@
-venv/
 .vscode/
 pyvista_tutorial/
-notebooks/
+pytorch_tutorial/
+archive/
 
 # macOS
 .DS_Store
