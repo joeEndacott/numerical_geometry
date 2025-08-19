@@ -1,6 +1,8 @@
 .vscode/
-pytorch_tutorials/data
 __pycache__/
+pytorch_tutorials/data
+pytorch_tutorials/images
+pytorch_tutorials/learn_the_basics.tex
 
 # macOS
 .DS_Store
