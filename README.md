@@ -37,16 +37,7 @@ numerical_geometry/
     ├── hemisphere_to_cow.ipynb
     ├── sphere_to_cube.ipynb
     ├── sphere.ipynb
-├── pytorch_tutorials/
-└── pyvista_tutorials/
 ```
-
-## Learning Resources
-
-This project draws from and references:
-
-- [PyTorch Official Tutorials](https://pytorch.org/tutorials/)
-- [PyVista Documentation](https://docs.pyvista.org/)
 
 ## Disclaimer
 
