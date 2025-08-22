@@ -1,8 +1,8 @@
 .vscode/
 __pycache__/
-pytorch_tutorials/data
-pytorch_tutorials/images
-pytorch_tutorials/learn_the_basics.tex
+pytorch_tutorials/
+pyvista_tutorials/
+numerical_geometry.egg-info
 
 # macOS
 .DS_Store
