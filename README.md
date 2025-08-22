@@ -35,8 +35,9 @@ numerical_geometry/
 └── notebooks/              # Exploration and experiments
     ├── cube.ipynb
     ├── hemisphere_to_cow.ipynb
+    ├── questions.ipynb
     ├── sphere_to_cube.ipynb
-    ├── sphere.ipynb
+    └──  sphere.ipynb
 ```
 
 ## Disclaimer
