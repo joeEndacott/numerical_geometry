@@ -8,7 +8,7 @@ This project is designed to be explored through Jupyter notebooks. To set up:
 
 ```bash
 # Clone and navigate to the project.
-git clone <https://github.com/joeEndacott/numerical_geometry.git>
+git clone https://github.com/joeEndacott/numerical_geometry.git
 cd numerical_geometry
 
 # Install in development mode.
@@ -29,15 +29,16 @@ jupyter lab notebooks/
 
 ```
 numerical_geometry/
-├── numerical_geometry/     # Core utilities
-│   ├── core.py
-│   └── utils.py
-└── notebooks/              # Exploration and experiments
+├── numerical_geometry/          # Core utilities
+│   ├── __init__.py
+│   ├── geometry.py
+│   └── neural_network.py
+└── notebooks/                   # Exploration and experiments
     ├── cube.ipynb
     ├── hemisphere_to_cow.ipynb
     ├── questions.ipynb
     ├── sphere_to_cube.ipynb
-    └──  sphere.ipynb
+    └── sphere.ipynb
 ```
 
 ## Disclaimer
