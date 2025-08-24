@@ -43,4 +43,4 @@ numerical_geometry/
 
 ## Disclaimer
 
-This code is experimental and educational in nature. It may contain bugs, inefficiencies, or unconventional approaches as it represents a learning journey rather than a production codebase.
+This code is experimental and educational in nature. It may contain bugs and inefficiencies - use at your own risk!
