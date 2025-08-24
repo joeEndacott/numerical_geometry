@@ -313,7 +313,7 @@ class RayTracing:
 
         # Extract vertices and normals from the sphere mesh.
         sphere_vertices = source_mesh.points
-        sphere_normals = source_mesh.point_data["normals"]
+        sphere_normals = source_mesh.point_data["Normals"]
 
         # Process each ray individually.
         for i, (origin, normal) in enumerate(zip(sphere_vertices, sphere_normals)):
@@ -470,3 +470,19 @@ class Utils:
         )
 
         pl.show()
+
+    @staticmethod
+    def plot_deformation(
+        source_mesh: pv.PolyData,
+        deformation: np.ndarray,
+        show_edges: bool = True,
+    ):
+        """
+        Plot deformation
+        ================
+
+        Produces a plot of the deformed source.
+        """
+        deformed_source_mesh = source_mesh.copy()
+        deformed_source_mesh.points = source_mesh.points + deformation
+        deformed_source_mesh.plot(show_edges=show_edges)
