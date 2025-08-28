@@ -474,8 +474,9 @@ class Utils:
     @staticmethod
     def plot_deformation(
         source_mesh: pv.PolyData,
+        target_mesh: pv.PolyData,
         deformation: np.ndarray,
-        show_edges: bool = True,
+        show_edges: bool = False,
     ):
         """
         Plot deformation
@@ -483,6 +484,19 @@ class Utils:
 
         Produces a plot of the deformed source.
         """
+        # Create a figure with 2 subplots.
+        pl = pv.Plotter(shape=(1, 2), window_size=[1000, 800])
+
+        # Plot the deformed source in the left subplot.
+        pl.subplot(0, 0)
         deformed_source_mesh = source_mesh.copy()
         deformed_source_mesh.points = source_mesh.points + deformation
-        deformed_source_mesh.plot(show_edges=show_edges)
+        pl.add_mesh(deformed_source_mesh, color="lightblue", show_edges=show_edges)
+        pl.add_text("Deformed source", position="upper_right", font_size=15)
+
+        # Plot the target in the right subplot.
+        pl.subplot(0, 1)
+        pl.add_mesh(target_mesh, color="orange", show_edges=show_edges)
+        pl.add_text("Target", position="upper_right", font_size=15)
+
+        pl.show()

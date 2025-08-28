@@ -19,8 +19,6 @@ plot_deformation = geometry.Utils.plot_deformation
 chamfer_distance = neural_network.LossFunction.chamfer_distance
 deformation_loss = neural_network.LossFunction.deformation_loss
 laplacian_loss = neural_network.LossFunction.laplacian_loss
-edge_length_loss = neural_network.LossFunction.edge_length_loss
-
 
 # Version info.
 __version__ = "0.1.0"
@@ -32,6 +30,7 @@ __all__ = [
     "sphere",
     "cube",
     "animate_deformation",
+    "plot_deformation",
     "NeuralNetwork",
     "chamfer_distance",
     "deformation_loss",
