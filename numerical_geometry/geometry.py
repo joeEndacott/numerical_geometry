@@ -5,8 +5,11 @@ Geometry
 This module groups functions related to 3D mesh generation and manipulation using PyVista.
 """
 
+from IPython.display import HTML
 import numpy as np
 import pyvista as pv
+import matplotlib.pyplot as plt
+import matplotlib.animation as animation
 
 
 class Sphere:
@@ -14,7 +17,7 @@ class Sphere:
     Sphere
     ======
 
-    A class to group functions related to generating a sphere using PyVista.
+    This class groups functions related to generating a sphere using PyVista.
     """
 
     @staticmethod
@@ -27,7 +30,7 @@ class Sphere:
         This function assumes that `_wrap_phi` has not been called.
         """
         # Extract the faces from the PyVista mesh.
-        faces = Utils.pyvista_faces_to_numpy(mesh.faces)
+        faces = FacesUtils.pyvista_faces_to_numpy(mesh.faces)
         max_vertex = np.max(faces)
 
         # Remove all faces involving the poles.
@@ -53,7 +56,7 @@ class Sphere:
 
         return pv.PolyData(
             mesh.points,
-            Utils.numpy_faces_to_pyvista(
+            FacesUtils.numpy_faces_to_pyvista(
                 np.vstack((north_faces, bulk_faces, south_faces))
             ),
         )
@@ -70,7 +73,7 @@ class Sphere:
         This function assumes that `_add_pole_faces` has already been called.
         """
         # Extract the faces from the PyVista mesh.
-        faces = Utils.pyvista_faces_to_numpy(mesh.faces)
+        faces = FacesUtils.pyvista_faces_to_numpy(mesh.faces)
         max_vertex = np.max(faces)
 
         # Wrap the phi coordinate in the bulk.
@@ -102,7 +105,7 @@ class Sphere:
 
         return pv.PolyData(
             mesh.points,
-            Utils.numpy_faces_to_pyvista(np.vstack((faces, wrapping_faces))),
+            FacesUtils.numpy_faces_to_pyvista(np.vstack((faces, wrapping_faces))),
         )
 
     @staticmethod
@@ -179,7 +182,7 @@ class Cube:
     Cube
     ====
 
-    A class to group methods related to generating a sphere using PyVista.
+    This class groups methods related to generating a sphere using PyVista.
     """
 
     @staticmethod
@@ -206,7 +209,7 @@ class Cube:
         vertices_x_min[:, 0] = -side_length / 2
         vertices_x_min[:, 1] = square_vertices_2d[:, 1]
         vertices_x_min[:, 2] = square_vertices_2d[:, 0]
-        faces_x_min = Utils.pyvista_faces_to_numpy(
+        faces_x_min = FacesUtils.pyvista_faces_to_numpy(
             pv.PolyData(vertices_x_min).delaunay_2d().faces
         )
 
@@ -215,7 +218,7 @@ class Cube:
         vertices_x_max[:, 0] = +side_length / 2
         vertices_x_max[:, 1] = square_vertices_2d[:, 1]
         vertices_x_max[:, 2] = square_vertices_2d[:, 0]
-        faces_x_max = Utils.pyvista_faces_to_numpy(
+        faces_x_max = FacesUtils.pyvista_faces_to_numpy(
             pv.PolyData(vertices_x_max).delaunay_2d().faces
         )
 
@@ -224,7 +227,7 @@ class Cube:
         vertices_y_min[:, 0] = square_vertices_2d[:, 0]
         vertices_y_min[:, 1] = -side_length / 2
         vertices_y_min[:, 2] = square_vertices_2d[:, 1]
-        faces_y_min = Utils.pyvista_faces_to_numpy(
+        faces_y_min = FacesUtils.pyvista_faces_to_numpy(
             pv.PolyData(vertices_y_min).delaunay_2d().faces
         )
 
@@ -233,7 +236,7 @@ class Cube:
         vertices_y_max[:, 0] = square_vertices_2d[:, 0]
         vertices_y_max[:, 1] = side_length / 2
         vertices_y_max[:, 2] = square_vertices_2d[:, 1]
-        faces_y_max = Utils.pyvista_faces_to_numpy(
+        faces_y_max = FacesUtils.pyvista_faces_to_numpy(
             pv.PolyData(vertices_y_max).delaunay_2d().faces
         )
 
@@ -242,7 +245,7 @@ class Cube:
         vertices_z_min[:, 0] = square_vertices_2d[:, 1]
         vertices_z_min[:, 1] = square_vertices_2d[:, 0]
         vertices_z_min[:, 2] = -side_length / 2
-        faces_z_min = Utils.pyvista_faces_to_numpy(
+        faces_z_min = FacesUtils.pyvista_faces_to_numpy(
             pv.PolyData(vertices_z_min).delaunay_2d().faces
         )
 
@@ -251,7 +254,7 @@ class Cube:
         vertices_z_max[:, 0] = square_vertices_2d[:, 1]
         vertices_z_max[:, 1] = square_vertices_2d[:, 0]
         vertices_z_max[:, 2] = side_length / 2
-        faces_z_max = Utils.pyvista_faces_to_numpy(
+        faces_z_max = FacesUtils.pyvista_faces_to_numpy(
             pv.PolyData(vertices_z_max).delaunay_2d().faces
         )
 
@@ -270,7 +273,7 @@ class Cube:
 
         # Create an array of faces.
         num_vertices = square_vertices_2d.shape[0]
-        cube_faces = Utils.numpy_faces_to_pyvista(
+        cube_faces = FacesUtils.numpy_faces_to_pyvista(
             np.vstack(
                 (
                     faces_x_min,
@@ -293,7 +296,7 @@ class RayTracing:
     Ray tracing
     ===========
 
-    A class to group functions related to ray tracing deformation methods.
+    This class groups functions related to ray tracing deformation methods.
     """
 
     @staticmethod
@@ -351,12 +354,12 @@ class RayTracing:
         return intersection_points, intersection_rays, intersection_cells
 
 
-class Utils:
+class FacesUtils:
     """
     Utils
     =====
 
-    A class to group utility functions.
+    This class groups utility functions related to mesh faces.
     """
 
     @staticmethod
@@ -416,76 +419,70 @@ class Utils:
         edges = mesh.extract_all_edges()
         return edges.lines.reshape(-1, 3)[:, 1:]
 
+
+class PlottingUtils:
+    """
+    Plotting utils
+    ==============
+
+    This class groups utility functions related to plotting.
+    """
+
     @staticmethod
-    def animate_deformation(
-        source_mesh: pv.PolyData,
-        target_mesh: pv.PolyData,
-        deformation: np.ndarray,
-        show_target: bool = False,
-        show_edges: bool = True,
-    ):
+    def plot_source_and_target(source_mesh: pv.PolyData, target_mesh: pv.PolyData):
         """
-        Animate deformation
-        ===================
+        Plot source and target
+        ======================
 
-        Produces an inline animation of the deformation from the source to the deformed source mesh.
+        Plots the source and target mesh in the same figure.
         """
-        # Extract the source vertices.
-        source_vertices = source_mesh.points.copy()
+        pl = pv.Plotter(shape=(1, 3))
 
-        # Create plotter with custom window size.
-        pl = pv.Plotter(window_size=[1000, 700])
-
-        # Add target mesh as reference.
-        if show_target:
-            pl.add_mesh(target_mesh, color="orange", opacity=0.3)
-
-        # Add source mesh.
-        source_actor = pl.add_mesh(
-            source_mesh, color="lightblue", show_edges=show_edges
+        # Plot the source mesh.
+        pl.subplot(0, 0)
+        pl.add_mesh(source_mesh, color="lightblue")
+        pl.add_text(
+            f"Source ({source_mesh.n_points} points)",
+            font_size=12,
+            position="upper_right",
         )
 
-        def update_deformation(t):
-            # Generate the deformed source mesh.
-            deformed_source_vertices = source_vertices + deformation * t
-            deformed_source_mesh = pv.PolyData(
-                deformed_source_vertices, source_mesh.faces
-            )
+        # Plot the target mesh.
+        pl.subplot(0, 1)
+        pl.add_mesh(target_mesh, color="orange")
+        pl.add_text(
+            f"Target ({target_mesh.n_points} points)",
+            font_size=12,
+            position="upper_right",
+        )
 
-            # Update the plot.
-            source_actor.GetMapper().SetInputData(deformed_source_mesh)
-
-            # Render the plot.
-            pl.render()
-
-        # Add a slider.
-        pl.add_slider_widget(
-            update_deformation,
-            rng=[0, 1],
-            value=0,
-            title="t",
-            pointa=(0.05, 0.8),
-            pointb=(0.25, 0.8),
-            style="modern",
+        # Plot the source and the target mesh.
+        pl.subplot(0, 2)
+        pl.add_mesh(source_mesh, color="lightblue", opacity=0.5)
+        pl.add_mesh(target_mesh, color="orange", opacity=0.5)
+        pl.add_text(
+            "Source and target",
+            font_size=12,
+            position="upper_right",
         )
 
         pl.show()
 
     @staticmethod
-    def plot_deformation(
+    def plot_deformed_source(
         source_mesh: pv.PolyData,
         target_mesh: pv.PolyData,
         deformation: np.ndarray,
         show_edges: bool = False,
     ):
         """
-        Plot deformation
-        ================
+        Plot deformed source
+        ====================
 
-        Produces a plot of the deformed source.
+        Produces a plot of the deformed source and the target.
         """
         # Create a figure with 2 subplots.
-        pl = pv.Plotter(shape=(1, 2), window_size=[1000, 800])
+        pl = pv.Plotter(shape=(1, 2))
 
         # Plot the deformed source in the left subplot.
         pl.subplot(0, 0)
@@ -500,3 +497,88 @@ class Utils:
         pl.add_text("Target", position="upper_right", font_size=15)
 
         pl.show()
+
+    @staticmethod
+    def animate_deformation(
+        source_mesh: pv.PolyData,
+        target_mesh: pv.PolyData,
+        deformation: np.ndarray,
+        num_frames: int = 120,
+        camera_radius: float = 5,
+        camera_elevation: float = 30,
+        camera_spin_rate: float = 2,
+        show_edges: bool = False,
+        show_target: bool = False,
+        save_as_gif: bool = False,
+        save_as_mp4: bool = False,
+    ):
+        """
+        Animate deformation
+        ===================
+
+        Animates the deformation of the source.
+        """
+        pl = pv.Plotter(off_screen=True)
+
+        # Set the initial camera position.
+        pl.camera_position = [
+            (camera_radius, 0, 0),
+            (0, 0, 0),
+            (0, 0, 1),
+        ]
+        pl.camera.elevation = camera_elevation
+
+        # Generate the frames.
+        frames = []
+        for frame, t in enumerate(np.linspace(0, 1, num_frames)):
+            pl.clear_actors()
+
+            # Compute the deformed source.
+            deformed_source = source_mesh.copy()
+            deformed_source.points = source_mesh.points + deformation * t
+            deformed_source = deformed_source.compute_normals()
+
+            # Plot the deformed source and target (optional).
+            if show_target:
+                pl.add_mesh(deformed_source, color="lightblue", opacity=0.5)
+                pl.add_mesh(target_mesh, color="orange", opacity=0.5)
+            else:
+                pl.add_mesh(deformed_source, color="lightblue", show_edges=show_edges)
+
+            # Rotate the camera.
+            pl.camera.azimuth = frame * camera_spin_rate
+
+            # Save the frame.
+            img = pl.screenshot(return_img=True, transparent_background=False)
+            frames.append(img)
+        pl.close()
+
+        # Create the matplotlib animation.
+        fig, ax = plt.subplots(figsize=(8, 8))
+        ax.axis("off")
+
+        # Define how the frames are animated.
+        def animate_frame(i):
+            ax.clear()
+            ax.axis("off")
+            ax.imshow(frames[i])
+            ax.set_title(f"{i/(len(frames)-1):.1%} deformed", fontsize=16)
+
+        # Create the animation.
+        anim = animation.FuncAnimation(
+            fig,
+            animate_frame,
+            frames=len(frames),
+            interval=33,
+            repeat=True,
+            blit=False,
+        )
+        plt.close()
+
+        # Save the animation.
+        if save_as_gif:
+            anim.save("deformation_animation.gif", writer="pillow", fps=30)
+        if save_as_mp4:
+            anim.save("deformation_animation.mp4", writer="ffmpeg", fps=30)
+
+        return HTML(anim.to_jshtml())

@@ -12,8 +12,9 @@ from .neural_network import NeuralNetwork
 # Import key functions from geometry.
 sphere = geometry.Sphere.sphere
 cube = geometry.Cube.cube
-animate_deformation = geometry.Utils.animate_deformation
-plot_deformation = geometry.Utils.plot_deformation
+plot_source_and_target = geometry.PlottingUtils.plot_source_and_target
+plot_deformation = geometry.PlottingUtils.plot_deformed_source
+animate_deformation = geometry.PlottingUtils.animate_deformation
 
 # Import key functions from neural_network.
 chamfer_distance = neural_network.LossFunction.chamfer_distance
