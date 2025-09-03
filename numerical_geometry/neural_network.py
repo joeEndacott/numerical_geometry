@@ -1,3 +1,4 @@
+# pylint: disable=too-many-lines
 """
 Neural network
 ==============
@@ -13,6 +14,7 @@ TODO: add function which finds the optimal learning rate.
 import time
 import copy
 from typing import Protocol
+import gc
 import torch
 from torch import nn
 import numpy as np
@@ -46,8 +48,8 @@ class NeuralNetwork(nn.Module):
     Neural network
     ==============
 
-    A class representing a simple neural network, designed to learn deformation fields. The class
-    also groups functions relating to the neural network.
+    This class represents a multilayer perceptron (MLP), designed to learn deformation fields. The
+    class also groups functions relating to the neural network.
     """
 
     allowed_input_dim = [3, 6]
@@ -55,10 +57,13 @@ class NeuralNetwork(nn.Module):
 
     def __init__(
         self,
-        layers: int = 4,
         input_dim: int = 3,
+        layers: int = 4,
         hidden_dim: int = 128,
         output_dim: int = 3,
+        dropout_prob: float = 0.1,
+        *,
+        verbose: bool = False,
     ):
         # Error checking.
         if input_dim not in NeuralNetwork.allowed_input_dim:
@@ -70,15 +75,22 @@ class NeuralNetwork(nn.Module):
                 f"output_dim must be one of {NeuralNetwork.allowed_output_dim}."
             )
 
-        # Add input and output dimension as attributes.
+        # Add inputs as attributes.
         self.input_dim = input_dim
+        self.layers = layers
+        self.hidden_dim = hidden_dim
         self.output_dim = output_dim
+        self.dropout_prob = dropout_prob
 
         # Initialize the neural network.
         super().__init__()
         mods = []
         for _ in range(layers):
-            mods += [nn.Linear(input_dim, hidden_dim), nn.ReLU(inplace=True)]
+            mods += [
+                nn.Linear(input_dim, hidden_dim),
+                nn.ReLU(inplace=True),
+                nn.Dropout(p=dropout_prob),
+            ]
             input_dim = hidden_dim
         mods += [nn.Linear(input_dim, output_dim)]
         self.net = nn.Sequential(*mods)
@@ -86,25 +98,33 @@ class NeuralNetwork(nn.Module):
         # Add number of parameters as an attribute.
         self.num_parameters = sum(p.numel() for p in self.parameters())
 
+        # Print the configuration.
+        if verbose:
+            self.print_configuration()
+
     def forward(self, x):  # pylint: disable=missing-function-docstring
         return self.net(x)
 
-    def _sync(self, device: torch.device):
+    def print_configuration(self):
         """
-        Sync
-        ====
+        Print configuration
+        ===================
 
-        Synchronize device operations for accurate timing.
+        Prints the configuration of the model to the terminal.
         """
-        if device.type == "mps":
-            torch.mps.synchronize()
-        elif device.type == "cuda":
-            torch.cuda.synchronize()
+        print("Configuration:")
+        print("=" * len("Configuration:"))
+        print(f"Input dim:       {self.input_dim}")
+        print(f"Layers:          {self.layers}")
+        print(f"Hidden dim:      {self.hidden_dim}")
+        print(f"Output dim:      {self.output_dim}")
+        print(f"Num. parameters: {self.num_parameters:.3e}")
+        print(f"Dropout prob.:   {self.dropout_prob}")
 
     def find_optimal_lr(
         self,
-        source_mesh: pv.PolyData,
-        target_mesh: pv.PolyData,
+        source: pv.PolyData | torch.Tensor,
+        target: pv.PolyData | torch.Tensor,
         device: torch.device,
         loss_function: LossFunctionProtocol,
         *,
@@ -124,104 +144,111 @@ class NeuralNetwork(nn.Module):
         min_iterations: int = 20,
         # Debugging and monitoring.
         verbose: bool = True,
-    ):
+        plot_results: bool = True,
+    ) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
         """
         Find optimal learning rate
         ==========================
 
         Find the optimal learning rate using a learning rate range test.
         """
+        # Extract the source and target.
+        source = PreparationUtils.prepare_source(self, source, device)
+        target = PreparationUtils.prepare_target(self, target, device)
+
+        # Error checking.
+        if num_iterations <= 0:
+            raise ValueError("num_iterations must be greater than 0.")
+        if initial_lr <= 0:
+            raise ValueError("initial_lr must be greater than 0.")
+        if final_lr <= 0:
+            raise ValueError("final_lr must be greater than 0.")
+        if final_lr <= initial_lr:
+            raise ValueError("final_lr must be larger than initial_lr.")
+        batch_size = min(batch_size, source.shape[0], target.shape[0])
+        if batch_size <= 0:
+            raise ValueError("batch_size must be greater than 0.")
+        if window_length <= 0:
+            raise ValueError("window_length must be greater than 0.")
+        if polyorder <= 0:
+            raise ValueError("polyorder must be greater than 0.")
+        if min_iterations <= 0:
+            raise ValueError("min_iterations must be greater than 0.")
+
+        # Initialize an optimizer.
+        optimizer = self._init_optimizer(optimizer_type, initial_lr)
+
+        # Generate log-spaced learning rates.
+        learning_rates = np.exp(
+            np.linspace(np.log(initial_lr), np.log(final_lr), num_iterations)
+        )
+
+        # Initialize variables to store training performance.
+        losses = []
+
+        # Save the initial model state.
+        initial_state = copy.deepcopy(self.state_dict())
+
+        # Print the configuration.
         if verbose:
             print("Configuration:")
             print("=" * len("Configuration:"))
             print(f"Optimizer:          {optimizer_type}")
             print(f"Learning rate:      [{initial_lr}, {final_lr}]")
             print(f"Early stopping:     {early_stopping}")
-        if early_stopping:
-            print(f"    Loss threshold: {loss_threshold}")
+            if early_stopping:
+                print(f"    Loss threshold: {loss_threshold}")
         print()
 
-        # Save the initial model state.
-        initial_state = copy.deepcopy(self.state_dict())
         self.train()
-
         try:
-            # Prepare the data.
-            source, target = PreparationUtils.prepare_data(
-                self, source_mesh, target_mesh, device
-            )
-
-            # Initialize an optimizer.
-            optimizer = TrainingUtils.get_optimizer(self, optimizer_type, initial_lr)
-
-            # Generate log-spaced learning rates.
-            log_learning_rates = np.linspace(
-                np.log(initial_lr), np.log(final_lr), num_iterations
-            )
-            learning_rates = np.exp(log_learning_rates)
-
-            losses = []
             for iteration in range(num_iterations):
-                # Set the learning rate for this iteration.
-                for param_group in optimizer.param_groups:
-                    param_group["lr"] = learning_rates[iteration]
-
-                # Generate a source batch.
-                batch_size = min(batch_size, source.size(0))
-                indices = torch.randperm(source.size(0))[:batch_size]
-                batch_source = source[indices]
-
-                # Generate a target batch.
-                target_batch_size = min(batch_size, target.size(0))
-                target_indices = torch.randperm(target.size(0))[:target_batch_size]
-                batch_target = target[target_indices]
-
-                # Compute the deformation and loss for this batch.
-                optimizer.zero_grad()
-                batch_deformation = self(batch_source)
-                batch_loss = loss_function(
-                    batch_source[:, :3], batch_target, batch_deformation
+                loss_current = self._lr_test_loop(
+                    source,
+                    target,
+                    device,
+                    loss_function,
+                    optimizer,
+                    learning_rates[iteration],
+                    batch_size,
                 )
-                current_loss = batch_loss.item()
-                losses.append(current_loss)
+                losses.append(loss_current)
 
                 # Check early stopping.
                 if early_stopping:
-                    if current_loss > loss_threshold and iteration >= min_iterations:
+                    if loss_current > loss_threshold and iteration >= min_iterations:
                         print(
                             f"\n\nEarly stopping triggered at lr = {learning_rates[iteration]}."
                         )
                         break
 
-                # Backpropagate the loss.
-                batch_loss.backward()
-                optimizer.step()
-
                 # Print the progress.
                 DisplayUtils.print_progress_bar(
                     iteration + 1,
                     num_iterations,
-                    current_loss,
+                    loss_current,
+                    None,
                     learning_rates[iteration],
-                    40,
+                    bar_length=40,
                 )
 
         finally:
-            # Restore original self state
+            # Restore the original model state.
             self.load_state_dict(initial_state)
-            self.eval()
             self.zero_grad()
+            self.eval()
+            NeuralNetwork._clear_cache(device)
+            gc.collect()
+
+        # Ensure learning_rates and losses are the same length
+        min_length = min(len(learning_rates), len(losses))
+        learning_rates = np.array(learning_rates[:min_length])
+        losses = np.array(losses[:min_length])
 
         # Smooth the losses.
         smoothed_losses = savgol_filter(
-            np.array(losses), window_length=window_length, polyorder=polyorder
+            losses, window_length=window_length, polyorder=polyorder
         )
-
-        # Ensure all arrays are the same length
-        min_length = min(len(learning_rates), len(losses), len(smoothed_losses))
-        learning_rates = learning_rates[:min_length]
-        losses = losses[:min_length]
-        smoothed_losses = smoothed_losses[:min_length]
 
         if verbose:
             if early_stopping:
@@ -231,16 +258,19 @@ class NeuralNetwork(nn.Module):
             print("=" * len("Results:"))
 
         # Plot loss vs. learning rate.
-        DisplayUtils.plot_optimal_lr(
-            learning_rates,
-            losses,
-            smoothed_losses,
-        )
+        if plot_results:
+            DisplayUtils.plot_optimal_lr(
+                learning_rates,
+                losses,
+                smoothed_losses,
+            )
+
+        return learning_rates, losses, smoothed_losses
 
     def train_model(
         self,
-        source_mesh: pv.PolyData,
-        target_mesh: pv.PolyData,
+        source: pv.PolyData | torch.Tensor,
+        target: pv.PolyData | torch.Tensor,
         device: torch.device,
         loss_function: LossFunctionProtocol,
         *,
@@ -249,12 +279,11 @@ class NeuralNetwork(nn.Module):
         optimizer_type: str = "SGD",
         lr: float = 1e-3,
         # Batch parameters.
-        source_batch_size: int = 2048,
-        target_batch_size: int = 2048,
+        batch_size: int = 1024,
         # Early stopping parameters.
         early_stopping: bool = False,
+        validation_fraction: float = 0.01,
         patience: int = 20,
-        min_delta: float = 1e-6,
         min_epochs: int = 20,
         # Debugging and monitoring.
         verbose: bool = True,
@@ -266,162 +295,171 @@ class NeuralNetwork(nn.Module):
 
         Trains the model to learn a deformation field from the source to the target.
         """
-        source_batch_size = min(source_batch_size, source_mesh.points.shape[0])
-        target_batch_size = min(target_batch_size, target_mesh.points.shape[0])
+        prep_start = time.time()
 
+        # Extract the source and target.
+        source = PreparationUtils.prepare_source(self, source, device)
+        target = PreparationUtils.prepare_target(self, target, device)
+
+        # Error checking.
+        if epochs <= 0:
+            raise ValueError("epochs must be greater than 0.")
+        if lr <= 0:
+            raise ValueError("lr must be greater than 0.")
+        batch_size = min(batch_size, source.shape[0], target.shape[0])
+        if batch_size <= 0:
+            raise ValueError("batch_size must be greater than 0.")
+        if validation_fraction >= 1:
+            raise ValueError("validation_fraction must be less than 1.")
+        if patience <= 0:
+            raise ValueError("patience must be greater than 0.")
+        if min_epochs < 0:
+            raise ValueError("min_epochs must be greater than or equal to 0.")
+
+        # Prepare training and validation set.
+        if early_stopping:
+            training_source, validation_source = PreparationUtils.split_source(
+                source, validation_fraction
+            )
+        else:
+            training_source = source
+
+        # Initialize the optimizer.
+        optimizer = self._init_optimizer(optimizer_type, lr)
+
+        # Initialize variables to store training performance.
+        epoch_history, training_loss_history, stopping_triggered = [], [], False
+        if early_stopping:
+            validation_loss_history = []
+        times = {
+            "total": 0.0,
+            "preparation": 0.0,
+            "training": 0.0,
+            "overhead": 0.0,
+            "forward": 0.0,
+            "loss": 0.0,
+            "backward": 0.0,
+            "unaccounted": 0.0,
+        }
+
+        # Print the configuration.
         if verbose:
             print("Configuration:")
             print("=" * len("Configuration:"))
-            print(f"Source points:      {source_mesh.points.shape[0]}")
-            print(f"Target points:      {target_mesh.points.shape[0]}")
-            print(f"Epochs:             {epochs}")
-            print(f"Optimizer:          {optimizer_type}")
-            print(f"Learning rate:      {lr}")
-            print(f"Source batch size:  {source_batch_size}")
-            print(f"Target batch size:  {target_batch_size}")
-            print(f"Learning rate:      {lr}")
-            print(f"Early stopping:     {early_stopping}")
-        if early_stopping:
-            print(f"    Patience:       {patience}")
-            print(f"    Min delta:      {min_delta}")
+            print(f"Source points:       {source.shape[0]}")
+            print(f"Target points:       {target.shape[0]}")
+            print(f"Epochs:              {epochs}")
+            print(f"Optimizer:           {optimizer_type}")
+            print(f"Learning rate:       {lr}")
+            print(f"Batch size:          {batch_size}")
+            print(f"Early stopping:      {early_stopping}")
+            if early_stopping:
+                print(f"Validation fraction: {validation_fraction}")
+                print(f"Patience:            {patience}")
+                print(f"Min. epochs:         {min_epochs}")
         print()
 
-        prep_start = time.time()
+        times["preparation"] = time.time() - prep_start
         self.train()
-
         try:
-            # Extract the source and target.
-            source, target = PreparationUtils.prepare_data(
-                self, source_mesh, target_mesh, device
-            )
-
-            # Initialize the optimizer and scheduler.
-            optimizer = TrainingUtils.get_optimizer(self, optimizer_type, lr)
-
-            # Compute the preparation time.
-            prep_time = time.time() - prep_start
-
-            # Initialize variables to store training performance.
-            epoch_history, loss_history, lr_history = [], [], []
-            overhead_time, forward_time, loss_time, backward_time = (0, 0, 0, 0)
-            stopping_triggered = False
-
             # Training loop.
             training_start = time.time()
             for epoch in range(epochs):
-                epoch_loss, num_batches = 0.0, 0
-
-                # Extract source and target batches for the current epoch.
-                overhead_start = time.time()
-                source_batches, target_batches = PreparationUtils.compute_epoch_batches(
-                    source, target, source_batch_size, target_batch_size, device
+                # Train the model for one epoch.
+                training_loss_current, times_current = self._training_loop(
+                    training_source,
+                    target,
+                    device,
+                    loss_function,
+                    optimizer,
+                    batch_size,
                 )
-                max_num_batches = max(len(source_batches), len(target_batches))
 
-                # Batches loop.
-                for batch_idx in range(max_num_batches):
-                    # Sample a subset of the source and target.
-                    batch_source = source_batches[batch_idx % len(source_batches)]
-                    batch_target = target_batches[batch_idx % len(target_batches)]
-                    self._sync(device)
-                    overhead_time_current = time.time() - overhead_start
-
-                    # Compute the deformation for this batch.
-                    forward_start = time.time()
-                    optimizer.zero_grad()
-                    batch_deformation = self(batch_source)
-                    self._sync(device)
-                    forward_time_current = time.time() - forward_start
-
-                    # Compute the loss for this batch.
-                    loss_start = time.time()
-                    batch_loss = loss_function(
-                        batch_source[:, :3], batch_target, batch_deformation
-                    )
-                    self._sync(device)
-                    loss_time_current = time.time() - loss_start
-
-                    # Backpropagate the loss.
-                    backward_start = time.time()
-                    batch_loss.backward()
-                    optimizer.step()
-                    self._sync(device)
-                    backward_time_current = time.time() - backward_start
-
-                    # Accumulate the times.
-                    overhead_time += overhead_time_current
-                    forward_time += forward_time_current
-                    loss_time += loss_time_current
-                    backward_time += backward_time_current
-
-                    # Update the epoch loss and number of batches.
-                    epoch_loss += batch_loss.item()
-                    num_batches += 1
-                    overhead_start = time.time()
-
-                # Compute the loss and learning rate for this epoch.
-                epoch_loss = epoch_loss / num_batches
-                current_lr = optimizer.param_groups[0]["lr"]
-
-                # Store values for plotting.
+                # Update training performance.
                 epoch_history.append(epoch)
-                loss_history.append(epoch_loss)
-                lr_history.append(current_lr)
+                training_loss_history.append(training_loss_current)
+                for key in ["overhead", "forward", "loss", "backward"]:
+                    times[key] += times_current[key]
 
-                # Check early stopping.
+                # Evaluate the model on the validation set.
                 if early_stopping:
-                    if TrainingUtils.should_stop_early(
-                        loss_history, patience, min_delta, min_epochs
+                    # Compute the validation loss.
+                    validation_loss_current, times_current = self._validation_loop(
+                        validation_source,
+                        target,
+                        device,
+                        loss_function,
+                        optimizer,
+                        batch_size,
+                    )
+
+                    # Update training performance.
+                    validation_loss_history.append(validation_loss_current)
+                    for key in ["overhead", "forward", "loss"]:
+                        times[key] += times_current[key]
+
+                    # Update the progress bar.
+                    DisplayUtils.print_progress_bar(
+                        epoch + 1,
+                        epochs,
+                        training_loss_current,
+                        validation_loss_current,
+                        None,
+                        bar_length=40,
+                    )
+
+                    # Check early stopping.
+                    if NeuralNetwork._early_stopping(
+                        validation_loss_history, patience, min_epochs
                     ):
                         stopping_triggered = True
                         print(f"\n\nEarly stopping triggered at epoch {epoch+1}.")
                         break
+                else:
+                    # Update the progress bar.
+                    DisplayUtils.print_progress_bar(
+                        epoch + 1,
+                        epochs,
+                        training_loss_current,
+                        None,
+                        None,
+                        bar_length=40,
+                    )
 
-                # Update the progress bar.
-                DisplayUtils.print_progress_bar(
-                    epoch + 1,
-                    epochs,
-                    epoch_loss,
-                    current_lr,
-                    bar_length=40,
-                )
-
-            training_time = time.time() - training_start
+            # Compute the total training time.
+            times["training"] = time.time() - training_start
+            times["total"] = times["preparation"] + times["training"]
 
             # Print the results.
             if verbose:
-                total_time = prep_time + training_time
-                accounted_time = (
-                    overhead_time + forward_time + loss_time + backward_time
+                DisplayUtils.print_training_results(
+                    times, len(epoch_history), stopping_triggered
                 )
-                unaccounted_time = training_time - accounted_time
-
-                if stopping_triggered:
-                    print("\nResults:")
-                else:
-                    print("\n\nResults:")
-                print("=" * len("Results:"))
-                print(f"Training completed after {len(loss_history)} epochs.")
-                print(f"Total time:      {prep_time+training_time:.2f}s")
-                print(f"    Preparation: {prep_time/total_time:.1%}.")
-                print(f"    Overhead:    {overhead_time/total_time:.1%}.")
-                print(f"    Forward:     {forward_time/total_time:.1%}.")
-                print(f"    Loss:        {loss_time/total_time:.1%}.")
-                print(f"    Backward:    {backward_time/total_time:.1%}.")
-                print(f"    Unaccounted: {unaccounted_time/total_time:.1%}.")
 
             # Plot the results.
-            if plot_results:
-                DisplayUtils.plot_loss_and_lr(epoch_history, loss_history)
-
-            # Return training results.
+            if plot_results and early_stopping:
+                DisplayUtils.plot_loss_and_lr(
+                    epoch_history, training_loss_history, validation_loss_history
+                )
+            elif plot_results and (not early_stopping):
+                DisplayUtils.plot_loss_and_lr(
+                    epoch_history, training_loss_history, None
+                )
 
         finally:
+            self.zero_grad()
             self.eval()
+            NeuralNetwork._clear_cache(device)
+            gc.collect()
 
     def evaluate_model(
-        self, source_mesh: pv.PolyData, device: torch.device
-    ) -> np.ndarray:
+        self,
+        source: pv.PolyData | torch.Tensor,
+        device: torch.device,
+        batch_size: int = 1024,
+        clear_cache: bool = True,
+        clear_every: int = 10,
+    ) -> np.ndarray | torch.Tensor:
         """
         Evaluate model
         ==============
@@ -432,23 +470,276 @@ class NeuralNetwork(nn.Module):
         self.eval()
 
         with torch.no_grad():
-            # Calculate the point cloud.
-            source_points = torch.from_numpy(source_mesh.points).float().to(device)
+            # Prepare source tensor from input
+            source = PreparationUtils.prepare_source(self, source, device)
 
-            # Prepare the source, and calculate the deformation.
-            if self.input_dim == 3:
-                source = source_points
-                return self(source).to("cpu").detach().numpy()
-            if self.input_dim == 6:
-                source_mesh = source_mesh.compute_normals()
-                source_normals = (
-                    torch.from_numpy(source_mesh.point_data["Normals"])
-                    .float()
-                    .to(device)
+            # Compute the deformation in batches.
+            deformations = []
+            for batch_start in range(0, source.shape[0], batch_size):
+                # Compute the batch deformation.
+                batch_deformation = self(
+                    source[batch_start : min(batch_start + batch_size, source.shape[0])]
                 )
-                source = torch.cat((source_points, source_normals), dim=1)
-                return self(source).to("cpu").detach().numpy()
-            raise ValueError("self.input_dim must be 3 or 6.")
+
+                # Append the batch deformation to the deformations array.
+                deformations.append(batch_deformation.cpu())
+
+                # Periodically clear the GPU cache.
+                if (
+                    (batch_start // batch_size) % clear_every == 0
+                    and batch_start > 0
+                    and clear_cache
+                ):
+                    NeuralNetwork._clear_cache(device)
+
+            if clear_cache:
+                NeuralNetwork._clear_cache(device)
+                gc.collect()
+
+            # Concatenate the deformations.
+            return torch.cat(deformations, dim=0).numpy()
+
+    @staticmethod
+    def _clear_cache(device: torch.device):
+        """
+        Clear cache
+        ===========
+
+        Clears the GPU cache.
+        """
+        if device.type == "mps":
+            torch.mps.empty_cache()
+        elif device.type == "cuda":
+            torch.cuda.empty_cache()
+
+    @staticmethod
+    def _early_stopping(
+        validation_loss_history: list[float], patience: int, min_epochs: int
+    ) -> bool:
+        """
+        Early stopping
+        =================
+
+        Checks if training should stop early.
+        """
+        if len(validation_loss_history) < min_epochs:
+            return False
+        if len(validation_loss_history) < patience + 1:
+            return False
+
+        # Find how long ago the best loss was.
+        best_loss_idx = validation_loss_history.index(min(validation_loss_history))
+        current_idx = len(validation_loss_history) - 1
+
+        # Stop if the best loss was too long ago.
+        if (current_idx - best_loss_idx) >= patience:
+            return True
+
+    def _init_optimizer(self, optimizer_type: str, lr: float) -> torch.optim.Optimizer:
+        """
+        Initialize optimizer
+        ====================
+
+        Initializes and returns the optimizer.
+        """
+        optimizers = {
+            "SGD": torch.optim.SGD,
+            "Adam": torch.optim.Adam,
+            "AdamW": torch.optim.AdamW,
+            "RMSprop": torch.optim.RMSprop,
+            "Adagrad": torch.optim.Adagrad,
+            "Adadelta": torch.optim.Adadelta,
+            "Adamax": torch.optim.Adamax,
+            "NAdam": torch.optim.NAdam,
+        }
+
+        if optimizer_type not in optimizers:
+            raise ValueError(f"Unknown optimizer: {optimizer_type}.")
+        return optimizers[optimizer_type](self.parameters(), lr=lr)
+
+    def _lr_test_loop(
+        self,
+        source: torch.Tensor,
+        target: torch.Tensor,
+        device: torch.device,
+        loss_function: LossFunctionProtocol,
+        optimizer: torch.optim.Optimizer,
+        learning_rate: float,
+        batch_size: int,
+    ):
+        """
+        Learning rate test loop
+        =======================
+
+        Trains the model for one iteration of the learning rate test.
+        """
+        # Set the learning rate for this iteration.
+        for param_group in optimizer.param_groups:
+            param_group["lr"] = learning_rate
+
+        # Generate source and target batches.
+        source_batches, target_batches = PreparationUtils.compute_epoch_batches(
+            source, target, batch_size, batch_size, device
+        )
+        batch_source, batch_target = source_batches[0], target_batches[0]
+
+        # Compute the deformation.
+        optimizer.zero_grad()
+        batch_deformation = self(batch_source)
+
+        # Compute the loss.
+        batch_loss = loss_function(batch_source[:, :3], batch_target, batch_deformation)
+
+        # Backpropagate the loss.
+        batch_loss.backward()
+        optimizer.step()
+
+        return batch_loss.item()
+
+    def _sync(self, device: torch.device):
+        """
+        Sync
+        ====
+
+        Synchronize device operations for accurate timing.
+        """
+        if device.type == "mps":
+            torch.mps.synchronize()
+        elif device.type == "cuda":
+            torch.cuda.synchronize()
+
+    def _training_loop(
+        self,
+        training_source: torch.Tensor,
+        target: torch.Tensor,
+        device: torch.device,
+        loss_function: LossFunctionProtocol,
+        optimizer: torch.optim.Optimizer,
+        batch_size: int,
+    ):
+        """
+        Training loop
+        =============
+
+        Trains the model for one epoch.
+        """
+        loss = 0
+        times = {
+            "overhead": 0.0,
+            "forward": 0.0,
+            "loss": 0.0,
+            "backward": 0.0,
+        }
+
+        # Extract source and target batches.
+        overhead_start = time.time()
+        source_batches, target_batches = PreparationUtils.compute_epoch_batches(
+            training_source,
+            target,
+            batch_size,
+            batch_size,
+            device,
+        )
+        max_num_batches = max(len(source_batches), len(target_batches))
+
+        # Batches loop.
+        for batch_idx in range(max_num_batches):
+            # Sample a subset of the source and target.
+            batch_source = source_batches[batch_idx % len(source_batches)]
+            batch_target = target_batches[batch_idx % len(target_batches)]
+            self._sync(device)
+            times["overhead"] += time.time() - overhead_start
+
+            # Compute the deformation.
+            forward_start = time.time()
+            optimizer.zero_grad()
+            batch_deformation = self(batch_source)
+            self._sync(device)
+            times["forward"] += time.time() - forward_start
+
+            # Compute the loss.
+            loss_start = time.time()
+            batch_loss = loss_function(
+                batch_source[:, :3], batch_target, batch_deformation
+            )
+            self._sync(device)
+            times["loss"] = time.time() - loss_start
+            loss += batch_loss.item()
+
+            # Backpropagate the loss.
+            backward_start = time.time()
+            batch_loss.backward()
+            optimizer.step()
+            self._sync(device)
+            times["backward"] += time.time() - backward_start
+
+            overhead_start = time.time()
+
+        # Compute the loss and learning rate.
+        loss = loss / max_num_batches
+        return loss, times
+
+    def _validation_loop(
+        self,
+        validation_source: torch.Tensor,
+        target: torch.Tensor,
+        device: torch.device,
+        loss_function: LossFunctionProtocol,
+        optimizer: torch.optim.Optimizer,
+        batch_size: int,
+    ):
+        """
+        Validation loop
+        ===============
+
+        Computes the loss on the validation set.
+        """
+        loss = 0
+        times = {
+            "overhead": 0.0,
+            "forward": 0.0,
+            "loss": 0.0,
+        }
+        # Extract source and target batches.
+        overhead_start = time.time()
+        source_batches, target_batches = PreparationUtils.compute_epoch_batches(
+            validation_source,
+            target,
+            batch_size,
+            batch_size,
+            device,
+        )
+        max_num_batches = max(len(source_batches), len(target_batches))
+
+        # Batches loop.
+        for batch_idx in range(max_num_batches):
+            # Sample a subset of the source and target.
+            batch_source = source_batches[batch_idx % len(source_batches)]
+            batch_target = target_batches[batch_idx % len(target_batches)]
+            self._sync(device)
+            times["overhead"] += time.time() - overhead_start
+
+            # Compute the deformation.
+            forward_start = time.time()
+            optimizer.zero_grad()
+            batch_deformation = self(batch_source)
+            self._sync(device)
+            times["forward"] += time.time() - forward_start
+
+            # Compute the loss.
+            loss_start = time.time()
+            batch_loss = loss_function(
+                batch_source[:, :3], batch_target, batch_deformation
+            )
+            self._sync(device)
+            times["loss"] = time.time() - loss_start
+            loss += batch_loss.item()
+
+            overhead_start = time.time()
+
+        # Compute the loss.
+        loss = loss / max_num_batches
+        return loss, times
 
 
 class LossFunction:
@@ -456,7 +747,7 @@ class LossFunction:
     Loss function
     =============
 
-    A class to group functions related to loss functions.
+    This class groups functions related to loss functions.
     """
 
     @staticmethod
@@ -526,80 +817,114 @@ class LossFunction:
         # Calculate the Laplacian loss.
         return torch.sqrt((laplacian**2).mean())
 
-    # @staticmethod
-    # def edge_length_loss(
-    #     source_points: torch.Tensor, deformation: torch.Tensor
-    # ) -> torch.Tensor:
-    #     """
-    #     Edge length loss
-    #     ================
-
-    #     Edge length regularization. The function returns the average change in the edge lengths.
-    #     """
-    #     # Compute the deformed source.
-    #     deformed_source = source_points + deformation
-
-    #     # Find the original and deformed edge lengths.
-    #     original_lengths = torch.norm(
-    #         source_points[edges[:, 0]] - source_points[edges[:, 1]], dim=1
-    #     )
-    #     deformed_lengths = torch.norm(
-    #         deformed_source[edges[:, 0]] - deformed_source[edges[:, 1]], dim=1
-    #     )
-
-    #     # Calculate the average squared difference.
-    #     return ((deformed_lengths - original_lengths) ** 2).mean()
-
 
 class PreparationUtils:
     """
     Preparation utils
     =================
 
-    A class to group utility functions related to preparing data for training.
+    This class groups utility functions related to preparing data for training.
     """
 
     @staticmethod
-    def prepare_data(
-        model: NeuralNetwork,
-        source_mesh: pv.PolyData,
-        target_mesh: pv.PolyData,
-        device: torch.device,
-    ) -> tuple[torch.Tensor, torch.Tensor]:
+    def prepare_source(
+        model: NeuralNetwork, source: pv.PolyData | torch.Tensor, device: torch.device
+    ) -> torch.Tensor:
         """
-        Prepare data
+        Prepare source
+        ==============
+
+        Converts a source mesh or tensor to the appropriate format for the model.
+        """
+        # Error handling.
+        if isinstance(source, pv.PolyData) and (
+            source.points is None or len(source.points) == 0
+        ):
+            raise ValueError("source cannot be empty.")
+        if (
+            isinstance(source, pv.PolyData)
+            and model.input_dim == 6
+            and ("Normals" not in source.point_data)
+        ):
+            source = source.compute_normals()
+            if "Normals" not in source.point_data:
+                raise ValueError("Failed to compute normals for mesh.")
+        if isinstance(source, torch.Tensor) and source.ndim != 2:
+            raise ValueError("source must be 2D.")
+        if isinstance(source, torch.Tensor) and source.shape[0] == 0:
+            raise ValueError("source cannot be empty.")
+        if isinstance(source, torch.Tensor) and source.shape[1] != model.input_dim:
+            raise ValueError(f"source must have shape (N, {model.input_dim}).")
+
+        # Prepare the source.
+        if isinstance(source, pv.PolyData):
+            points = torch.from_numpy(source.points).float().to(device)
+            if model.input_dim == 3:
+                return points
+            elif model.input_dim == 6:
+                normals = (
+                    torch.from_numpy(source.point_data["Normals"]).float().to(device)
+                )
+                return torch.cat((points, normals), dim=1)
+            else:
+                raise ValueError("model.input_dim must be 3 or 6.")
+        elif isinstance(source, torch.Tensor):
+            return source.to(device)
+        else:
+            raise TypeError("source must be pv.PolyData or torch.Tensor.")
+
+    @staticmethod
+    def prepare_target(
+        model: NeuralNetwork, target: pv.PolyData | torch.Tensor, device: torch.device
+    ) -> torch.Tensor:
+        """
+        Prepare target
+        ==============
+
+        Converts a target mesh or tensor to the appropriate format for the model.
+        """
+        # Error handling.
+        if isinstance(target, pv.PolyData) and (
+            target.points is None or len(target.points) == 0
+        ):
+            raise ValueError("target cannot be empty.")
+        if isinstance(target, torch.Tensor) and target.ndim != 2:
+            raise ValueError("target must be 2D.")
+        if isinstance(target, torch.Tensor) and target.shape[0] == 0:
+            raise ValueError("target cannot be empty.")
+        if isinstance(target, torch.Tensor) and target.shape[1] != model.output_dim:
+            raise ValueError(f"target must have shape (N, {model.output_dim}).")
+
+        # Prepare the target.
+        if isinstance(target, pv.PolyData):
+            points = torch.from_numpy(target.points).float().to(device)
+            if model.output_dim == 3:
+                return points
+            else:
+                raise ValueError("model.input_dim must be 3 or 6.")
+        elif isinstance(target, torch.Tensor):
+            return target.to(device)
+        else:
+            raise TypeError("target must be pv.PolyData or torch.Tensor.")
+
+    @staticmethod
+    def split_source(source: torch.Tensor, validation_fraction: float):
+        """
+        Split source
         ============
 
-        Extracts data relevant for training. Returns source and target point clouds and source
-        vertex normals (optional).
+        Splits the source into a training set and a validation set.
         """
-        if source_mesh.points is None or len(source_mesh.points) == 0:
-            raise ValueError("source_mesh cannot be empty.")
-        if target_mesh.points is None or len(target_mesh.points) == 0:
-            raise ValueError("target_mesh cannot be empty.")
+        # Calculate the number of validation samples
+        num_validation = int(validation_fraction * source.shape[0])
 
-        if model.input_dim == 3:
-            source = torch.from_numpy(source_mesh.points).float().to(device)
-            target = torch.from_numpy(target_mesh.points).float().to(device)
-            return source, target
-
-        if model.input_dim == 6:
-            # Compute normals if they don't exist
-            if "Normals" not in source_mesh.point_data:
-                source_mesh = source_mesh.compute_normals()
-            if "Normals" not in source_mesh.point_data:
-                raise ValueError("Failed to compute normals for source_mesh.")
-
-            # Extract source points and normals, and concatenate them.
-            source_points = torch.from_numpy(source_mesh.points).float().to(device)
-            source_normals = (
-                torch.from_numpy(source_mesh.point_data["Normals"]).float().to(device)
-            )
-            source = torch.cat((source_points, source_normals), dim=1)
-            target = torch.from_numpy(target_mesh.points).float().to(device)
-            return source, target
-
-        raise ValueError("model.input_dim must be equal to 3 or 6.")
+        if num_validation == 0:
+            raise ValueError("Not enough points to make a validation set.")
+        else:
+            indices = torch.randperm(source.shape[0], device=source.device)
+            validation_indices = indices[:num_validation]
+            training_indices = indices[num_validation:]
+            return source[training_indices], source[validation_indices]
 
     @staticmethod
     def precompute_all_batches(
@@ -706,152 +1031,13 @@ class PreparationUtils:
         return source_batches, target_batches
 
 
-class TrainingUtils:
-    """
-    Training utils
-    ==============
-
-    A class to group utility functions related to training neural networks.
-    """
-
-    optimizers = {
-        "SGD": torch.optim.SGD,
-        "Adam": torch.optim.Adam,
-        "AdamW": torch.optim.AdamW,
-        "RMSprop": torch.optim.RMSprop,
-        "Adagrad": torch.optim.Adagrad,
-        "Adadelta": torch.optim.Adadelta,
-        "Adamax": torch.optim.Adamax,
-        "NAdam": torch.optim.NAdam,
-    }
-
-    @staticmethod
-    def get_optimizer(
-        model: NeuralNetwork, optimizer_type: str, lr: float
-    ) -> torch.optim.Optimizer:
-        """
-        Get optimizer
-        =============
-
-        Initializes and returns the optimizer.
-        """
-
-        if optimizer_type not in TrainingUtils.optimizers:
-            raise ValueError(f"Unknown optimizer: {optimizer_type}.")
-        return TrainingUtils.optimizers[optimizer_type](model.parameters(), lr=lr)
-
-    @staticmethod
-    def get_scheduler(
-        scheduler_type: str | None,
-        optimizer: torch.optim.Optimizer,
-        initial_lr: float,
-        epochs: int,
-    ) -> torch.optim.lr_scheduler.LRScheduler | None:
-        """
-        Get scheduler
-        =============
-
-        Initializes and returns the scheduler. If scheduler_type is None, None is returned.
-        """
-        if scheduler_type is None:
-            return None
-        if scheduler_type == "cosine":
-            return torch.optim.lr_scheduler.CosineAnnealingLR(
-                optimizer, T_max=epochs, eta_min=initial_lr * 0.1
-            )
-        if scheduler_type == "exponential":
-            return torch.optim.lr_scheduler.ExponentialLR(optimizer, gamma=0.995)
-        if scheduler_type == "step":
-            return torch.optim.lr_scheduler.StepLR(optimizer, step_size=200, gamma=0.5)
-        if scheduler_type == "reduce_on_plateau":
-            return torch.optim.lr_scheduler.ReduceLROnPlateau(
-                optimizer, mode="min", factor=0.5, patience=50
-            )
-        raise ValueError(f"Unknown scheduler type: {scheduler_type}.")
-
-    @staticmethod
-    def should_stop_early(
-        loss_history: list[float], patience: int, min_delta: float, min_epochs: int
-    ):
-        """
-        Should stop early
-        =================
-
-        Checks if training should stop early.
-        """
-        if len(loss_history) < min_epochs:
-            return False
-        if len(loss_history) < patience + 1:
-            return False
-
-        # Compare the best losses from the previous 2 epoch windows.
-        best_recent_loss = min(loss_history[-patience:])
-        best_old_loss = min(loss_history[-2 * patience : -patience])
-        return (best_old_loss - best_recent_loss) < min_delta
-
-
 class DisplayUtils:
     """
     Display utils
     =============
 
-    A class to group functions related to displaying training results.
+    This class groups functions related to displaying training results.
     """
-
-    @staticmethod
-    def print_progress_bar(
-        epoch: int,
-        epochs: int,
-        loss: float,
-        lr: float,
-        bar_length: int,
-    ):
-        """
-        Print progress bar
-        ==================
-
-        Displays a progress bar.
-        """
-        filled_length = int(bar_length * epoch / epochs)
-        progress_bar = "█" * filled_length + "-" * (bar_length - filled_length)
-
-        print(
-            f"\r[{progress_bar}] {epoch}/{epochs} ({(epoch/epochs):.1%}) | "
-            f"Loss: {loss:.6f} | "
-            f"Learning rate: {lr:.4f}",
-            end="",
-            flush=True,
-        )
-
-    @staticmethod
-    def plot_loss_and_lr(
-        epoch_history: list[int],
-        loss_history: list[float],
-    ):
-        """
-        Plot loss and learning rate
-        ===========================
-
-        Plots the loss and learning rate upon completion of training.
-        """
-        # Initialize the plot.
-        _, (ax1, ax2) = plt.subplots(2, 1, figsize=(10, 8))
-
-        # Plot the loss.
-        ax1.set_xlabel("Epoch")
-        ax1.set_ylabel("Loss")
-        ax1.grid(True, alpha=0.3)
-        ax1.scatter(epoch_history, loss_history, s=10)
-
-        # Plot the learning rate.
-        ax2.set_xlabel("Epoch")
-        ax2.set_ylabel("Loss")
-        ax2.set_yscale("log")
-        ax2.grid(True, alpha=0.3)
-        ax2.scatter(epoch_history, loss_history, s=10)
-
-        plt.tight_layout()
-        plt.show()
 
     @staticmethod
     def plot_optimal_lr(
@@ -865,14 +1051,146 @@ class DisplayUtils:
 
         Plot the learning rate test results.
         """
-        _, ax = plt.subplots(figsize=(10, 8))
+        _, ax1 = plt.subplots(1, 1, figsize=(8, 5))
 
         # Plot loss vs learning rate on a log scale.
-        ax.set_xlabel("Learning rate")
-        ax.set_ylabel("Loss")
-        ax.grid(True, which="both", axis="both", alpha=0.3)
-        ax.semilogx(learning_rates, losses, alpha=0.6, label="Raw Loss")
-        ax.semilogx(learning_rates, smoothed_losses, linewidth=2, label="Smoothed Loss")
-        ax.legend()
+        ax1.set_xlabel("Learning rate")
+        ax1.set_xscale("log")
+        ax1.set_ylabel("Loss")
+        ax1.set_yscale("log")
+        ax1.grid(True, which="both", axis="both", alpha=0.3)
+        ax1.plot(learning_rates, losses, alpha=0.6, label="Raw Loss")
+        ax1.plot(learning_rates, smoothed_losses, linewidth=2, label="Smoothed Loss")
+        ax1.legend()
+
+        plt.tight_layout()
+        plt.show()
+
+    @staticmethod
+    def print_progress_bar(
+        epoch: int,
+        epochs: int,
+        training_loss: float,
+        validation_loss: float | None,
+        lr: float | None,
+        bar_length: int,
+    ):
+        """
+        Print progress bar
+        ==================
+
+        Displays a progress bar.
+        """
+        filled_length = int(bar_length * epoch / epochs)
+        progress_bar = "█" * filled_length + "-" * (bar_length - filled_length)
+
+        if validation_loss is None and lr is None:
+            print(
+                f"\r[{progress_bar}] {epoch}/{epochs} ({(epoch/epochs):.1%}) | "
+                f"Loss: {training_loss:.6f}.",
+                end="",
+                flush=True,
+            )
+        elif validation_loss is not None and lr is None:
+            print(
+                f"\r[{progress_bar}] {epoch}/{epochs} ({(epoch/epochs):.1%}) | "
+                f"Training loss: {training_loss:.6f} | "
+                f"Validation loss: {validation_loss:.6f}.",
+                end="",
+                flush=True,
+            )
+        elif validation_loss is None and lr is not None:
+            print(
+                f"\r[{progress_bar}] {epoch}/{epochs} ({(epoch/epochs):.1%}) | "
+                f"Loss: {training_loss:.6f} | "
+                f"Learning rate: {lr:.3e}.",
+                end="",
+                flush=True,
+            )
+        else:
+            print(
+                f"\r[{progress_bar}] {epoch}/{epochs} ({(epoch/epochs):.1%}) | "
+                f"Training loss: {training_loss:.6f} | "
+                f"Validation loss: {validation_loss:.6f} | "
+                f"Learning rate: {lr:.3e}.",
+                end="",
+                flush=True,
+            )
+
+    @staticmethod
+    def print_training_results(times: dict, epochs: int, stopping_triggered: bool):
+        """
+        Print training results
+        ======================
+
+        Prints the results of training.
+        """
+        # Compute the accounted and unaccounted time
+        accounted_time = 0
+        for key in ["preparation", "overhead", "forward", "loss", "backward"]:
+            accounted_time += times[key]
+        times["unaccounted"] = times["total"] - accounted_time
+
+        # Convert the times to fractions.
+        fractions = {
+            key: times[key] / times["total"] for key in times if key != "total"
+        }
+
+        # Print the times.
+        if stopping_triggered:
+            print("\nResults:")
+        else:
+            print("\n\nResults:")
+        print("=" * len("Results:"))
+        print(f"Training completed after {epochs} epochs.")
+        print(f"Total time:  {times["total"]:.2f}s")
+        print(f"Preparation: {fractions["preparation"]:.1%}.")
+        print(f"Training:    {fractions["training"]:.1%}.")
+        print(f"Overhead:    {fractions["overhead"]:.1%}.")
+        print(f"Forward:     {fractions["forward"]:.1%}.")
+        print(f"Loss:        {fractions["loss"]:.1%}.")
+        print(f"Backward:    {fractions["backward"]:.1%}.")
+        print(f"Unaccounted: {fractions["unaccounted"]:.1%}.")
+
+    @staticmethod
+    def plot_loss_and_lr(
+        epoch_history: list[int],
+        training_loss_history: list[float],
+        validation_loss_history: list[float] | None,
+    ):
+        """
+        Plot loss and learning rate
+        ===========================
+
+        Plots the loss and learning rate upon completion of training.
+        """
+        if validation_loss_history is None:
+            # Initialize the plot.
+            _, ax1 = plt.subplots(1, 1, figsize=(8, 5))
+
+            # Plot the training loss (log scale).
+            ax1.set_xlabel("Epoch")
+            ax1.set_ylabel("Loss")
+            ax1.set_yscale("log")
+            ax1.grid(True, which="both", axis="both", alpha=0.3)
+            ax1.scatter(epoch_history, training_loss_history, s=10)
+        else:
+            # Initialize the plot.
+            _, (ax1, ax2) = plt.subplots(2, 1, figsize=(8, 10))
+
+            # Plot the training loss (log scale).
+            ax1.set_xlabel("Epoch")
+            ax1.set_ylabel("Training loss")
+            ax1.set_yscale("log")
+            ax1.grid(True, which="both", axis="both", alpha=0.3)
+            ax1.scatter(epoch_history, training_loss_history, s=10)
+
+            # Plot the validation loss (log scale).
+            ax2.set_xlabel("Epoch")
+            ax2.set_ylabel("Validation loss")
+            ax2.set_yscale("log")
+            ax2.grid(True, which="both", axis="both", alpha=0.3)
+            ax2.scatter(epoch_history, validation_loss_history, s=10)
+
         plt.tight_layout()
         plt.show()

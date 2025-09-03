@@ -2,7 +2,9 @@
 __pycache__/
 pytorch_tutorials/
 pyvista_tutorials/
+drivaer_data/
 numerical_geometry.egg-info
+download_script.sh
 
 # macOS
 .DS_Store
